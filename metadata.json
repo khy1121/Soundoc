@@ -2,6 +2,7 @@
   "name": "Fix It Now",
   "description": "A multimodal appliance diagnosis assistant using Gemini 2.5 to analyze audio and text symptoms for instant repair guides.",
   "requestFramePermissions": [
-    "microphone"
+    "microphone",
+    "geolocation"
   ]
 }

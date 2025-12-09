@@ -1,8 +1,8 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { SendIcon, MessageCircleIcon } from './Icons';
 import { ChatMessage, DiagnosisResult } from '../types';
-import { getChatResponse } from '../services/geminiService';
+import { getChatResponseStream } from '../services/geminiService';
+import { GenerateContentResponse } from '@google/genai';
 
 interface ChatInterfaceProps {
   diagnosisContext: DiagnosisResult;
@@ -44,31 +44,45 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ diagnosisContext, onClose
     setInput('');
     setIsTyping(true);
 
+    // Prepare placeholder for AI response
+    const aiMsgId = (Date.now() + 1).toString();
+    setMessages(prev => [
+      ...prev, 
+      {
+        id: aiMsgId,
+        role: 'model',
+        text: '', // Start empty for streaming
+        timestamp: Date.now()
+      }
+    ]);
+
     try {
       // Prepare history for Gemini API
+      // Exclude the last empty AI message we just added
       const history = messages.map(m => ({
         role: m.role,
         parts: [{ text: m.text }]
       }));
       
-      const responseText = await getChatResponse(history, userMsg.text);
+      const stream = await getChatResponseStream(history, userMsg.text);
 
-      const aiMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        text: responseText || "연결에 문제가 발생했습니다. 다시 시도해 주세요.",
-        timestamp: Date.now(),
-      };
-      setMessages(prev => [...prev, aiMsg]);
+      let fullText = "";
+
+      for await (const chunk of stream) {
+        const c = chunk as GenerateContentResponse;
+        if (c.text) {
+          fullText += c.text;
+          setMessages(prev => prev.map(msg => 
+            msg.id === aiMsgId ? { ...msg, text: fullText } : msg
+          ));
+        }
+      }
+
     } catch (error) {
       console.error("Chat error", error);
-      const errorMsg: ChatMessage = {
-        id: Date.now().toString(),
-        role: 'model',
-        text: "죄송합니다. 오류가 발생했습니다.",
-        timestamp: Date.now(),
-      };
-      setMessages(prev => [...prev, errorMsg]);
+      setMessages(prev => prev.map(msg => 
+        msg.id === aiMsgId ? { ...msg, text: "죄송합니다. 오류가 발생했습니다." } : msg
+      ));
     } finally {
       setIsTyping(false);
     }
@@ -100,20 +114,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ diagnosisContext, onClose
                 }`}
               >
                 {msg.text}
+                {msg.role === 'model' && isTyping && msg.id === messages[messages.length - 1].id && (
+                    <span className="inline-block w-1.5 h-4 ml-1 bg-slate-400 align-middle animate-pulse"></span>
+                )}
               </div>
             </div>
           ))}
-          {isTyping && (
-            <div className="flex justify-start">
-              <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-none p-3 shadow-sm">
-                <div className="flex gap-1">
-                  <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></span>
-                  <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
-                  <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
-                </div>
-              </div>
-            </div>
-          )}
           <div ref={messagesEndRef} />
         </div>
 

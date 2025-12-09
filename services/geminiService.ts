@@ -1,11 +1,10 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { DiagnosisResult } from "../types";
 
 // Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-// RAG 시뮬레이션을 위한 가상 매뉴얼 컨텍스트 (실제 PDF에서 추출한 텍스트라고 가정)
+// RAG 시뮬레이션을 위한 가상 매뉴얼 컨텍스트
 const MANUAL_CONTEXT = `
 [삼성전자 에어컨 서비스 매뉴얼 발췌]
 1. 에러 코드 E1: 실내기 온도 센서 불량. 센서 연결 잭 확인 필요. 저항값 10k옴 확인.
@@ -118,11 +117,9 @@ export const analyzeProblem = async (
     }
 
     const result = JSON.parse(response.text) as DiagnosisResult;
-    // Add Client-side ID and Timestamp
     result.id = Date.now().toString();
     result.timestamp = Date.now();
     
-    // Pass back the image if provided, for display
     if (imageBase64) {
         result.imageUrl = `data:image/jpeg;base64,${imageBase64}`;
     }
@@ -145,4 +142,41 @@ export const getChatResponse = async (history: { role: string; parts: { text: st
 
   const response = await chat.sendMessage({ message: newMessage });
   return response.text;
+};
+
+export const getChatResponseStream = async (history: { role: string; parts: { text: string }[] }[], newMessage: string) => {
+  const chat = ai.chats.create({
+    model: "gemini-2.5-flash",
+    config: {
+      systemInstruction: SYSTEM_INSTRUCTION + " 당신은 이제 사용자가 이전에 진단받은 문제에 대해 돕는 후속 채팅 모드입니다. 한국어로 답변하세요.",
+    },
+    history: history,
+  });
+
+  const streamResult = await chat.sendMessageStream({ message: newMessage });
+  return streamResult;
+};
+
+export const findServiceCenters = async (appliance: string, lat: number, lng: number) => {
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Find official service centers for ${appliance} near the provided location. Provide a brief summary of the nearest center including name and phone number if available.`,
+      config: {
+        tools: [{ googleMaps: {} }],
+        toolConfig: {
+          retrievalConfig: {
+            latLng: {
+              latitude: lat,
+              longitude: lng
+            }
+          }
+        }
+      },
+    });
+    return response.text;
+  } catch (error) {
+    console.error("Maps Grounding Error:", error);
+    return "서비스 센터 정보를 불러오는 중 오류가 발생했습니다. (Google Maps Tool Error)";
+  }
 };

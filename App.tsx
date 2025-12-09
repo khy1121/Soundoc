@@ -1,10 +1,10 @@
-
 import React, { useState, useEffect } from 'react';
 import AudioRecorder from './components/AudioRecorder';
 import ImageUploader from './components/ImageUploader';
 import DiagnosisView from './components/DiagnosisView';
 import ChatInterface from './components/ChatInterface';
 import { analyzeProblem } from './services/geminiService';
+import { saveDiagnosis, getAllHistory, clearHistoryDB } from './services/storageService';
 import { AnalysisStatus, DiagnosisResult, InputMode } from './types';
 import { ActivityIcon, SearchIcon, WrenchIcon, ImageIcon, HistoryIcon, UploadIcon, TrashIcon } from './components/Icons';
 
@@ -21,22 +21,14 @@ function App() {
   const [history, setHistory] = useState<DiagnosisResult[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
-  // Load History on Mount
+  // Load History on Mount (IndexedDB)
   useEffect(() => {
-    const saved = localStorage.getItem('fixitnow_history');
-    if (saved) {
-      try {
-        setHistory(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to parse history", e);
-      }
-    }
+    const loadHistory = async () => {
+      const storedHistory = await getAllHistory();
+      setHistory(storedHistory);
+    };
+    loadHistory();
   }, []);
-
-  // Save History when it changes
-  useEffect(() => {
-    localStorage.setItem('fixitnow_history', JSON.stringify(history));
-  }, [history]);
 
   // Helper to convert blob to base64
   const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -102,9 +94,11 @@ function App() {
     }
   };
 
-  const finishAnalysis = (result: DiagnosisResult) => {
+  const finishAnalysis = async (result: DiagnosisResult) => {
     setDiagnosisResult(result);
-    setHistory(prev => [result, ...prev]);
+    await saveDiagnosis(result);
+    const updatedHistory = await getAllHistory();
+    setHistory(updatedHistory);
     setStatus('complete');
   };
 
@@ -122,8 +116,9 @@ function App() {
     setShowHistory(false);
   };
 
-  const clearHistory = () => {
+  const clearHistory = async () => {
     if(confirm('모든 진단 기록을 삭제하시겠습니까?')) {
+        await clearHistoryDB();
         setHistory([]);
     }
   };
