@@ -3,7 +3,7 @@ import React, { useRef, useState } from 'react';
 import { UploadIcon, ImageIcon, TrashIcon } from './Icons';
 
 interface ImageUploaderProps {
-  onImageSelected: (base64: string) => void;
+  onImageSelected: (data: { base64: string, mimeType: string, dataUrl: string } | null) => void;
   onAnalyze: () => void;
 }
 
@@ -25,13 +25,15 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageSelected, onAnalyz
       setPreview(result);
       // Remove data url prefix for API
       const base64 = result.split(',')[1];
-      onImageSelected(base64);
+      const mimeType = file.type || 'image/jpeg';
+      onImageSelected({ base64, mimeType, dataUrl: result });
     };
     reader.readAsDataURL(file);
   };
 
   const clearImage = () => {
     setPreview(null);
+    onImageSelected(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }

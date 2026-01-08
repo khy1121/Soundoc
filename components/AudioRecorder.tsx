@@ -1,12 +1,14 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { MicIcon, SquareIcon } from './Icons';
 
 interface AudioRecorderProps {
-  onRecordingComplete: (blob: Blob) => void;
+  onRecordingComplete: (blob: Blob, mimeType: string) => void;
+  onDurationError?: () => void;
   disabled?: boolean;
 }
 
-const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, disabled }) => {
+const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, onDurationError, disabled }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -16,6 +18,8 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, disa
   const analyzerRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+
+  const MIN_DURATION = 3; // 3 seconds
 
   useEffect(() => {
     let interval: any;
@@ -29,18 +33,27 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, disa
     return () => clearInterval(interval);
   }, [isRecording]);
 
+  const getSupportedMimeType = () => {
+    const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/aac'];
+    for (const type of types) {
+      if (MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return '';
+  };
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
       // Setup Visualizer
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       analyzerRef.current = audioContextRef.current.createAnalyser();
       sourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
       sourceRef.current.connect(analyzerRef.current);
       analyzerRef.current.fftSize = 256;
 
-      mediaRecorderRef.current = new MediaRecorder(stream);
+      const mimeType = getSupportedMimeType();
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType });
       chunksRef.current = [];
 
       mediaRecorderRef.current.ondataavailable = (e) => {
@@ -50,8 +63,16 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, disa
       };
 
       mediaRecorderRef.current.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/mp3' }); // Commonly supported container
-        onRecordingComplete(blob);
+        if (recordingTime < MIN_DURATION) {
+          if (onDurationError) onDurationError();
+          // Cleanup tracks anyway
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        const finalMime = mediaRecorderRef.current?.mimeType || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type: finalMime });
+        onRecordingComplete(blob, finalMime);
         
         // Cleanup stream
         stream.getTracks().forEach(track => track.stop());
@@ -63,9 +84,9 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, disa
       setIsRecording(true);
       drawVisualizer();
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error accessing microphone:", err);
-      alert("마이크에 접근할 수 없습니다. 권한을 확인해주세요.");
+      // Let parent handle specific error types if needed via props or simply broad feedback
     }
   };
 
@@ -90,7 +111,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, disa
       animationFrameRef.current = requestAnimationFrame(draw);
       analyzerRef.current!.getByteFrequencyData(dataArray);
 
-      ctx.fillStyle = 'rgb(248, 250, 252)'; // bg-slate-50 matches parent
+      ctx.fillStyle = 'rgb(248, 250, 252)'; // bg-slate-50
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       const barWidth = (canvas.width / bufferLength) * 2.5;
@@ -99,7 +120,6 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, disa
 
       for (let i = 0; i < bufferLength; i++) {
         barHeight = dataArray[i] / 2;
-        // Gradient color for bars
         ctx.fillStyle = `rgb(${barHeight + 100}, 50, 200)`;
         ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
         x += barWidth + 1;
@@ -149,7 +169,7 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ onRecordingComplete, disa
          )}
       </div>
       <p className="mt-4 text-xs text-slate-500">
-        정확한 진단을 위해 5~10초간 녹음해주세요.
+        정확한 진단을 위해 {MIN_DURATION}초 이상 녹음해주세요.
       </p>
     </div>
   );

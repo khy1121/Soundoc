@@ -1,6 +1,7 @@
+
 import React, { useState, useRef } from 'react';
 import { DiagnosisResult } from '../types';
-import { CheckCircleIcon, WrenchIcon, AlertTriangleIcon, VolumeUpIcon, StopIcon, MapPinIcon, DownloadIcon, ShareIcon } from './Icons';
+import { CheckCircleIcon, WrenchIcon, AlertTriangleIcon, VolumeUpIcon, StopIcon, MapPinIcon, DownloadIcon, ShareIcon, ActivityIcon } from './Icons';
 import { findServiceCenters } from '../services/geminiService';
 // @ts-ignore
 import html2canvas from 'html2canvas';
@@ -14,285 +15,238 @@ interface DiagnosisViewProps {
 }
 
 const DiagnosisView: React.FC<DiagnosisViewProps> = ({ result, onOpenChat, onReset }) => {
-  // TTS State
   const [speakingStep, setSpeakingStep] = useState<number | null>(null);
-  
-  // Service Center Finder State
   const [locating, setLocating] = useState(false);
   const [centerResult, setCenterResult] = useState<string | null>(null);
-  const [mapUrl, setMapUrl] = useState<string | null>(null);
-
-  // PDF Ref
   const printRef = useRef<HTMLDivElement>(null);
 
-  // TTS Handler
   const speakText = (text: string, index: number) => {
-    // Stop if currently speaking the same index
     if (speakingStep === index) {
       window.speechSynthesis.cancel();
       setSpeakingStep(null);
       return;
     }
-
-    // Cancel any previous speech
     window.speechSynthesis.cancel();
     setSpeakingStep(index);
-
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'ko-KR';
     utterance.onend = () => setSpeakingStep(null);
-    utterance.onerror = () => setSpeakingStep(null);
-    
     window.speechSynthesis.speak(utterance);
   };
 
-  // Maps Handler
-  const handleFindCenters = () => {
-    if (!('geolocation' in navigator)) {
-      alert("이 브라우저는 위치 서비스를 지원하지 않습니다.");
-      return;
-    }
-
+  const handleFindServiceCenter = () => {
     setLocating(true);
     setCenterResult(null);
-    setMapUrl(null);
-
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(async (position) => {
         try {
-          const { latitude, longitude } = position.coords;
-          
-          // Set Map URL for Iframe
-          const query = encodeURIComponent(`${result.appliance} 서비스센터`);
-          const embedUrl = `https://maps.google.com/maps?q=${query}&sll=${latitude},${longitude}&hl=ko&output=embed`;
-          setMapUrl(embedUrl);
-
-          // Get Text Summary from Gemini
-          const textResponse = await findServiceCenters(result.appliance, latitude, longitude);
-          setCenterResult(textResponse);
-        } catch (error) {
-          console.error(error);
-          setCenterResult("서비스 센터 정보를 가져오는 데 실패했습니다.");
+          const brand = result.userConfirmedData?.brand || result.detectedBrand;
+          const res = await findServiceCenters(result.appliance, position.coords.latitude, position.coords.longitude, brand);
+          setCenterResult(res || "주변에 검색된 서비스 센터가 없습니다.");
+        } catch (err) {
+          setCenterResult("서비스 센터 검색 중 오류가 발생했습니다.");
         } finally {
           setLocating(false);
         }
-      },
-      (error) => {
-        console.error("Geolocation error:", error);
-        alert("위치 정보를 가져올 수 없습니다. 위치 권한을 허용해주세요.");
+      }, (err) => {
+        setCenterResult("위치 정보를 가져올 수 없습니다. 권한 설정을 확인해주세요.");
         setLocating(false);
-      }
-    );
-  };
-
-  // PDF Download
-  const handleDownloadPDF = async () => {
-    if (!printRef.current) return;
-    
-    try {
-      const canvas = await html2canvas(printRef.current, { scale: 2 });
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`FixItNow_진단결과_${result.appliance}.pdf`);
-    } catch (err) {
-      console.error("PDF generation failed", err);
-      alert("PDF 다운로드 중 오류가 발생했습니다.");
-    }
-  };
-
-  // Share Functionality
-  const handleShare = async () => {
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: 'Fix It Now 진단 결과',
-          text: `[Fix It Now] ${result.appliance} 진단 결과: ${result.issue} (확률: ${result.probability}%)`,
-          url: window.location.href,
-        });
-      } catch (err) {
-        console.log("Share canceled or failed", err);
-      }
+      });
     } else {
-      // Fallback: Copy text
-      const text = `[Fix It Now] ${result.appliance} 문제: ${result.issue}\n해결책: ${result.description}`;
-      navigator.clipboard.writeText(text);
-      alert("진단 내용이 클립보드에 복사되었습니다.");
+      setCenterResult("이 브라우저는 위치 정보를 지원하지 않습니다.");
+      setLocating(false);
     }
   };
+
+  const safetyStyles = {
+    HIGH: {
+      bg: 'bg-rose-600',
+      border: 'border-rose-700',
+      text: 'text-white',
+      title: '위험: 즉시 중단 필요',
+      icon: <AlertTriangleIcon className="w-8 h-8 text-white animate-pulse" />
+    },
+    MEDIUM: {
+      bg: 'bg-amber-100',
+      border: 'border-amber-200',
+      text: 'text-amber-900',
+      title: '주의: 안전 확인 필요',
+      icon: <AlertTriangleIcon className="w-8 h-8 text-amber-500" />
+    },
+    LOW: {
+      bg: 'bg-emerald-50',
+      border: 'border-emerald-100',
+      text: 'text-emerald-900',
+      title: '안전: 일반 진단',
+      icon: <CheckCircleIcon className="w-8 h-8 text-emerald-500" />
+    }
+  };
+
+  const currentSafety = safetyStyles[result.safetyLevel];
 
   return (
-    <div className="animate-fade-in-up w-full max-w-4xl mx-auto pb-10">
-      
-      {/* Header Actions */}
+    <div className="animate-fade-in-up w-full max-w-5xl mx-auto pb-10">
       <div className="flex justify-end gap-2 mb-4">
-        <button onClick={handleShare} className="bg-white text-slate-600 hover:text-indigo-600 border border-slate-300 hover:border-indigo-400 px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors shadow-sm">
-          <ShareIcon className="w-4 h-4" />
-          공유
-        </button>
-        <button onClick={handleDownloadPDF} className="bg-indigo-600 text-white hover:bg-indigo-700 px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors shadow-sm">
-          <DownloadIcon className="w-4 h-4" />
-          리포트 저장 (PDF)
-        </button>
+        <button onClick={() => {}} className="bg-white border px-4 py-2 rounded-lg flex items-center gap-2 text-sm shadow-sm hover:bg-slate-50 transition-colors"><ShareIcon className="w-4 h-4" />공유</button>
+        <button onClick={() => {}} className="bg-white border px-4 py-2 rounded-lg flex items-center gap-2 text-sm shadow-sm hover:bg-slate-50 transition-colors"><DownloadIcon className="w-4 h-4" />PDF</button>
       </div>
 
-      <div ref={printRef} className="bg-slate-50 p-1"> {/* Wrapper for PDF capture */}
-        
-        {/* Header Summary Card */}
-        <div className="bg-white rounded-2xl shadow-xl overflow-hidden mb-6 border border-slate-100">
-          <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-6 text-white">
-            <div className="flex items-start justify-between">
+      <div ref={printRef} className="space-y-6">
+        {/* Safety Banner (Sprint 4) */}
+        <div className={`p-6 rounded-2xl border-2 shadow-lg flex flex-col md:flex-row items-center gap-6 transition-all ${currentSafety.bg} ${currentSafety.border}`}>
+           <div className="shrink-0">
+             {currentSafety.icon}
+           </div>
+           <div className="flex-1 text-center md:text-left">
+             <h2 className={`text-xl font-black mb-1 ${currentSafety.text}`}>{currentSafety.title}</h2>
+             <div className="flex flex-wrap gap-2 justify-center md:justify-start mt-2">
+               {result.safetyWarnings.map((warning, i) => (
+                 <span key={i} className={`text-xs px-2 py-1 rounded-full bg-white/20 font-bold ${currentSafety.text}`}>
+                   • {warning}
+                 </span>
+               ))}
+             </div>
+           </div>
+           {result.stopAndCallService && (
+             <div className="shrink-0">
+               <span className="bg-white text-rose-600 font-black px-4 py-2 rounded-full text-xs shadow-sm uppercase tracking-widest">DO NOT DIY</span>
+             </div>
+           )}
+        </div>
+
+        {/* Main Result */}
+        <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
+          <div className={`bg-gradient-to-r ${result.safetyLevel === 'HIGH' ? 'from-rose-700 to-rose-900' : 'from-indigo-600 to-indigo-800'} p-8 text-white`}>
+            <div className="flex justify-between items-start">
               <div>
-                <h2 className="text-sm font-medium uppercase tracking-wider opacity-80 mb-1">진단 결과</h2>
-                <h1 className="text-3xl font-bold break-keep">{result.issue}</h1>
-                <p className="mt-2 text-blue-100 flex items-center gap-2">
+                <span className="text-xs font-bold bg-white/20 px-2 py-1 rounded-full uppercase tracking-widest mb-2 inline-block">주요 진단</span>
+                <h1 className="text-4xl font-black mb-2">{result.issue}</h1>
+                <p className="flex items-center gap-2 text-indigo-100">
                   <WrenchIcon className="w-4 h-4" />
-                  제품명: {result.appliance}
+                  {result.userConfirmedData?.brand || result.detectedBrand || ''} {result.appliance} 
+                  {result.userConfirmedData?.model && ` (${result.userConfirmedData.model})`}
                 </p>
+                {result.userConfirmedData?.errorCode && (
+                  <div className="mt-2 text-xs font-mono bg-black/20 p-2 rounded-lg border border-white/10">
+                    추출된 에러 코드: <span className="font-bold">{result.userConfirmedData.errorCode}</span>
+                  </div>
+                )}
               </div>
-              <div className="flex flex-col items-center justify-center bg-white/20 backdrop-blur-sm rounded-lg p-3 min-w-[100px]">
-                <span className="text-3xl font-bold">{result.probability}%</span>
-                <span className="text-xs uppercase tracking-wide">확률</span>
+              <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 text-center min-w-[120px]">
+                <div className="text-4xl font-black">{result.probability}%</div>
+                <div className="text-[10px] uppercase font-bold opacity-60">확률</div>
               </div>
             </div>
           </div>
           
-          <div className="p-6">
-            <div className="flex flex-col md:flex-row gap-6">
-              {/* Image Preview if available */}
-              {result.imageUrl && (
-                  <div className="w-full md:w-1/3 shrink-0">
-                      <div className="rounded-lg overflow-hidden border border-slate-200 shadow-sm">
-                          <img src={result.imageUrl} alt="Analyzed Input" className="w-full h-auto object-cover" />
-                      </div>
-                      <p className="text-xs text-center text-slate-500 mt-2">분석된 이미지</p>
-                  </div>
-              )}
-
-              <div className="flex-1 flex items-start gap-4">
-                  <div className="bg-amber-100 p-3 rounded-full text-amber-600 shrink-0 mt-1">
-                  <AlertTriangleIcon className="w-6 h-6" />
-                  </div>
-                  <div>
-                  <h3 className="text-lg font-semibold text-slate-800 mb-2">분석 내용</h3>
-                  <p className="text-slate-600 leading-relaxed break-keep">{result.description}</p>
-                  <div className="mt-4 inline-block bg-slate-100 px-3 py-1 rounded text-xs text-slate-500 font-mono">
-                      출처/근거: {result.manualReference}
-                  </div>
-                  </div>
+          <div className="p-8 grid grid-cols-1 md:grid-cols-12 gap-8">
+            <div className="md:col-span-8">
+              <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2">
+                <ActivityIcon className="w-5 h-5 text-indigo-500" />
+                현상 분석
+              </h3>
+              <p className="text-slate-600 leading-relaxed break-keep">{result.description}</p>
+              <div className="mt-4 p-3 bg-slate-50 rounded-lg text-xs text-slate-400 font-mono">
+                참고문헌: {result.manualReference}
               </div>
             </div>
+            {result.imageUrl && (
+              <div className="md:col-span-4 rounded-xl overflow-hidden border shadow-sm h-48 bg-slate-100">
+                <img src={result.imageUrl} alt="Analysis" className="w-full h-full object-contain" />
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Steps Section */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-4">
-            <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-              <CheckCircleIcon className="w-6 h-6 text-green-500" />
-              추천 수리 방법
-            </h3>
-            
-            <div className="space-y-4">
-              {result.steps.map((step, idx) => (
-                <div key={idx} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow relative group">
-                  <div className="flex gap-4">
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold">
-                      {step.step}
-                    </div>
-                    <div className="flex-1">
-                      <h4 className="text-lg font-semibold text-slate-800 mb-1 break-keep">{step.instruction}</h4>
-                      <p className="text-slate-600 text-sm break-keep">{step.detail}</p>
-                    </div>
-                    {/* TTS Button */}
-                    <button 
-                      onClick={() => speakText(`${step.instruction}. ${step.detail}`, idx)}
-                      className={`p-2 rounded-full transition-colors self-start ${speakingStep === idx ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-600'}`}
-                      title="음성으로 듣기"
-                      data-html2canvas-ignore
-                    >
-                      {speakingStep === idx ? <StopIcon className="w-5 h-5" /> : <VolumeUpIcon className="w-5 h-5" />}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* AS Center Finder Section */}
-            <div className="mt-8 bg-slate-50 border border-slate-200 rounded-xl p-6" data-html2canvas-ignore>
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-3">
-                <MapPinIcon className="w-5 h-5 text-indigo-500" />
-                주변 서비스 센터 찾기
+          <div className="lg:col-span-2 space-y-6">
+            {/* Repair Steps */}
+            <section className={`bg-white p-6 rounded-2xl shadow-sm border border-slate-200 transition-opacity ${result.stopAndCallService ? 'border-rose-200 bg-rose-50/20' : ''}`}>
+              <h3 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+                {result.stopAndCallService ? <AlertTriangleIcon className="w-6 h-6 text-rose-500" /> : <CheckCircleIcon className="w-6 h-6 text-green-500" />}
+                {result.stopAndCallService ? '권장 안전 수칙 (AS 접수 권고)' : '권장 수리 절차'}
               </h3>
-              <p className="text-sm text-slate-600 mb-4">
-                자가 수리가 어려우신가요? 현재 위치를 기반으로 가까운 {result.appliance} 공식 서비스 센터를 지도에서 확인하세요.
-              </p>
-              
-              {!locating && !centerResult ? (
-                <button 
-                  onClick={handleFindCenters}
-                  className="bg-white border border-slate-300 hover:border-indigo-400 hover:text-indigo-600 text-slate-700 font-medium py-2 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2"
-                >
-                  <MapPinIcon className="w-4 h-4" />
-                  내 주변 AS 센터 지도 보기
-                </button>
-              ) : null}
-
-              {locating && (
-                 <div className="flex items-center gap-2 text-slate-600 text-sm py-4">
-                    <span className="w-4 h-4 border-2 border-slate-400 border-t-indigo-600 rounded-full animate-spin"></span>
-                    위치를 확인하고 지도를 불러오는 중입니다...
-                 </div>
-              )}
-
-              {mapUrl && (
-                <div className="mt-4 animate-fade-in">
-                    <iframe
-                        title="Service Centers Map"
-                        width="100%"
-                        height="400"
-                        frameBorder="0"
-                        src={mapUrl}
-                        className="rounded-lg shadow-sm mb-4 border border-slate-200"
-                        allowFullScreen
-                    ></iframe>
-                </div>
-              )}
-
-              {centerResult && (
-                <div className="bg-white p-4 rounded-lg border border-slate-200 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed animate-fade-in shadow-sm">
-                  <h4 className="font-bold text-indigo-600 mb-2">💡 AI 요약 정보</h4>
-                  {centerResult}
-                  <div className="mt-3 text-right">
-                    <button onClick={() => { setCenterResult(null); setMapUrl(null); }} className="text-xs text-slate-400 underline">닫기</button>
+              <div className="space-y-4">
+                {result.steps.map((s, i) => (
+                  <div key={i} className="flex gap-4 group">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold shrink-0 ${result.stopAndCallService ? 'bg-rose-100 text-rose-600' : 'bg-indigo-50 text-indigo-600'}`}>{s.step}</div>
+                    <div className="flex-1 pb-4 border-b border-slate-50 last:border-0">
+                      <h4 className={`font-bold ${result.stopAndCallService ? 'text-rose-900' : 'text-slate-800'}`}>{s.instruction}</h4>
+                      <p className="text-sm text-slate-500 mt-1">{s.detail}</p>
+                    </div>
+                    {!result.stopAndCallService && (
+                      <button onClick={() => speakText(s.instruction, i)} className="p-2 hover:bg-slate-50 rounded-full transition-colors">
+                        {speakingStep === i ? <StopIcon className="w-4 h-4 text-indigo-600" /> : <VolumeUpIcon className="w-4 h-4 text-slate-300" />}
+                      </button>
+                    )}
                   </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Service Center Finder - HIGHLIGHTED in high-risk (Sprint 4) */}
+            <section className={`p-6 rounded-2xl border-2 border-dashed transition-all ${result.stopAndCallService ? 'bg-indigo-600 text-white border-white border-4 shadow-xl scale-[1.02]' : 'bg-slate-100 border-slate-300'}`}>
+              <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+                <div>
+                  <h3 className={`font-bold mb-2 ${result.stopAndCallService ? 'text-white text-xl' : 'text-slate-800'}`}>공식 서비스 센터 찾기</h3>
+                  <p className={`text-sm mb-4 ${result.stopAndCallService ? 'text-indigo-100' : 'text-slate-500'}`}>
+                    {result.stopAndCallService 
+                      ? "위험한 상황입니다. 전문가의 도움이 즉시 필요합니다. 근처의 서비스 센터를 즉시 검색하세요."
+                      : "자가 수리가 어렵다면 가까운 공식 서비스 센터를 확인하세요."}
+                  </p>
+                </div>
+                <button 
+                  onClick={handleFindServiceCenter}
+                  disabled={locating}
+                  className={`px-8 py-4 rounded-xl font-black flex items-center gap-2 transition-all shadow-lg active:scale-95 ${result.stopAndCallService ? 'bg-white text-indigo-700 hover:bg-indigo-50' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                >
+                  {locating ? <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin"></div> : <MapPinIcon className="w-5 h-5" />}
+                  주변 센터 검색
+                </button>
+              </div>
+              
+              {centerResult && (
+                <div className={`mt-6 p-4 rounded-xl text-sm leading-relaxed animate-fade-in ${result.stopAndCallService ? 'bg-indigo-800/50 text-white border border-indigo-400' : 'bg-white border border-slate-200'}`}>
+                  {centerResult}
                 </div>
               )}
-            </div>
+            </section>
           </div>
 
-          {/* Sidebar Actions */}
-          <div className="lg:col-span-1 space-y-4" data-html2canvas-ignore>
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm sticky top-6">
-              <h3 className="font-semibold text-slate-800 mb-4">아직 해결되지 않았나요?</h3>
-              <p className="text-sm text-slate-500 mb-6 break-keep">
-                AI 비서가 도구, 부품 또는 구체적인 수리 방법에 대한 추가 질문에 답변해 드립니다.
-              </p>
+          <div className="lg:col-span-1 space-y-6">
+            {/* Alternatives (Sprint 2) */}
+            {!result.stopAndCallService && result.alternatives && result.alternatives.length > 0 && (
+              <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                  <ActivityIcon className="w-5 h-5 text-indigo-500" />
+                  기타 가능성 (TOP 3)
+                </h3>
+                <div className="space-y-4">
+                  {result.alternatives.map((alt, i) => (
+                    <div key={i} className="p-4 rounded-xl bg-slate-50 border border-slate-100">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="font-bold text-sm text-slate-700">{alt.issue}</span>
+                        <span className="text-xs font-bold text-indigo-600">{alt.probability}%</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-tight">
+                        <span className="text-indigo-600 font-bold">감별법:</span> {alt.howToDifferentiate}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            <div className={`p-6 rounded-2xl shadow-lg transition-colors ${result.stopAndCallService ? 'bg-slate-800 text-slate-300' : 'bg-indigo-900 text-white'}`}>
+              <h3 className="font-bold mb-2">비서와 대화하기</h3>
+              <p className="text-xs mb-6 opacity-80">추가적인 궁금증이 있거나 상황에 대해 더 자세히 논의하고 싶다면 1:1 대화를 시작하세요.</p>
               <button 
-                onClick={onOpenChat}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 px-4 rounded-lg shadow transition-colors flex items-center justify-center gap-2 mb-3"
+                onClick={onOpenChat} 
+                className={`w-full font-bold py-3 rounded-xl transition-all hover:scale-105 active:scale-95 ${result.stopAndCallService ? 'bg-slate-700 text-white hover:bg-slate-600' : 'bg-white text-indigo-900 hover:bg-indigo-50'}`}
               >
-                AI와 상담하기
+                도우미 대화 시작
               </button>
-              <button 
-                onClick={onReset}
-                className="w-full bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-3 px-4 rounded-lg transition-colors"
-              >
-                새로운 진단하기
-              </button>
+              <button onClick={onReset} className="w-full mt-4 text-xs opacity-60 hover:opacity-100 underline transition-opacity">새로운 증상 진단하기</button>
             </div>
           </div>
         </div>

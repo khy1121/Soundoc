@@ -5,6 +5,19 @@ export interface RepairStep {
   detail: string;
 }
 
+export interface AlternativeCause {
+  issue: string;
+  probability: number;
+  howToDifferentiate: string;
+}
+
+export interface FollowUpQuestion {
+  id: string;
+  question: string;
+  type: 'single' | 'multi' | 'text';
+  options?: string[];
+}
+
 export interface DiagnosisResult {
   id: string; // For history
   timestamp: number; // For history
@@ -14,7 +27,29 @@ export interface DiagnosisResult {
   description: string;
   manualReference: string;
   steps: RepairStep[];
-  imageUrl?: string; // To show the analyzed image in result
+  imageUrl?: string; 
+  
+  // Sprint 2 Additions
+  needsFollowUp: boolean;
+  followUpQuestions?: FollowUpQuestion[];
+  alternatives?: AlternativeCause[];
+  userAnswers?: Record<string, string | string[]>;
+
+  // Sprint 4 Additions
+  safetyLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  safetyWarnings: string[];
+  stopAndCallService: boolean;
+
+  // Sprint 5 Additions
+  detectedBrand?: string;
+  detectedModel?: string;
+  detectedErrorCode?: string;
+  imageFindings?: string[];
+  userConfirmedData?: {
+    brand: string;
+    model: string;
+    errorCode: string;
+  };
 }
 
 export interface ChatMessage {
@@ -30,4 +65,9 @@ export enum InputMode {
   IMAGE = 'IMAGE',
 }
 
-export type AnalysisStatus = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error';
+export type AnalysisStatus = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error' | 'permission-denied' | 'too-short' | 'follow-up' | 'confirm-extraction';
+
+export interface MediaInput {
+  base64: string;
+  mimeType: string;
+}
