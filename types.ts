@@ -18,6 +18,12 @@ export interface FollowUpQuestion {
   options?: string[];
 }
 
+export interface Evidence {
+  source: 'MANUAL' | 'GENERAL';
+  title: string;
+  snippet: string;
+}
+
 export interface DiagnosisResult {
   id: string; // For history
   timestamp: number; // For history
@@ -50,6 +56,15 @@ export interface DiagnosisResult {
     model: string;
     errorCode: string;
   };
+
+  // Sprint 6 Additions
+  evidence: Evidence[];
+
+  // Sprint 7 Additions
+  resolutionStatus?: 'SOLVED' | 'NOT_SOLVED' | 'UNKNOWN';
+  followUpSessionId?: string;
+  beforeAfterNote?: string;
+  isRecheck?: boolean;
 }
 
 export interface ChatMessage {
@@ -65,7 +80,7 @@ export enum InputMode {
   IMAGE = 'IMAGE',
 }
 
-export type AnalysisStatus = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error' | 'permission-denied' | 'too-short' | 'follow-up' | 'confirm-extraction';
+export type AnalysisStatus = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error' | 'permission-denied' | 'too-short' | 'follow-up' | 'confirm-extraction' | 'rechecking';
 
 export interface MediaInput {
   base64: string;

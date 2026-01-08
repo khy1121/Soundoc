@@ -7,7 +7,7 @@ import ChatInterface from './components/ChatInterface';
 import FollowUpQuestions from './components/FollowUpQuestions';
 import GuidedTextInput from './components/GuidedTextInput';
 import ExtractionConfirmation from './components/ExtractionConfirmation';
-import { analyzeProblem } from './services/geminiService';
+import { analyzeProblem, recheckDiagnosis } from './services/geminiService';
 import { saveDiagnosis, getAllHistory, clearHistoryDB } from './services/storageService';
 import { AnalysisStatus, DiagnosisResult, InputMode, MediaInput } from './types';
 import { ActivityIcon, SearchIcon, WrenchIcon, ImageIcon, HistoryIcon, UploadIcon } from './components/Icons';
@@ -22,6 +22,9 @@ function App() {
   const [lastAudio, setLastAudio] = useState<MediaInput | null>(null);
   const [lastImage, setLastImage] = useState<MediaInput | null>(null);
   const [lastText, setLastText] = useState('');
+
+  // Recheck state
+  const [recheckTarget, setRecheckTarget] = useState<DiagnosisResult | null>(null);
 
   // Local state for image uploader selection
   const [selectedImage, setSelectedImage] = useState<MediaInput | null>(null);
@@ -58,7 +61,28 @@ function App() {
     });
   };
 
+  const handleStartRecheck = (audio: MediaInput | null, image: MediaInput | null) => {
+    if (!recheckTarget) return;
+    performRecheck(recheckTarget, audio, image);
+  };
+
+  const performRecheck = async (old: DiagnosisResult, audio: MediaInput | null, image: MediaInput | null) => {
+    try {
+      setStatus('analyzing');
+      const result = await recheckDiagnosis(old, audio, image);
+      finishAnalysis(result);
+    } catch (error) {
+      console.error(error);
+      setStatus('error');
+    }
+  };
+
   const processAnalysis = async (audio: MediaInput | null, image: MediaInput | null, text: string) => {
+    if (status === 'rechecking') {
+      handleStartRecheck(audio, image);
+      return;
+    }
+
     try {
       setStatus('analyzing');
       setLastAudio(audio);
@@ -67,7 +91,6 @@ function App() {
 
       const result = await analyzeProblem(audio, image, text);
       
-      // Sprint 5: If it's an image input and we found extraction details, ask for confirmation
       const hasExtraction = result.detectedBrand || result.detectedModel || result.detectedErrorCode;
       if (image && hasExtraction && status !== 'confirm-extraction') {
         setPendingDiagnosis(result);
@@ -116,9 +139,27 @@ function App() {
     }
   };
 
+  const handleResolutionUpdate = async (id: string, status: 'SOLVED' | 'NOT_SOLVED') => {
+    const item = history.find(h => h.id === id);
+    if (!item) return;
+
+    const updated = { ...item, resolutionStatus: status };
+    await saveDiagnosis(updated);
+    
+    // If not solved, maybe prompt user to re-diagnose with more detail
+    if (status === 'NOT_SOLVED') {
+      alert('문제가 해결되지 않았군요. 추가 정보를 포함하여 다시 진단하거나 공식 AS 센터를 방문하는 것을 추천합니다.');
+    }
+
+    const updatedHistory = await getAllHistory();
+    setHistory(updatedHistory);
+    if (diagnosisResult?.id === id) setDiagnosisResult(updated);
+  };
+
   const finishAnalysis = async (result: DiagnosisResult) => {
     setDiagnosisResult(result);
     setPendingDiagnosis(null);
+    setRecheckTarget(null);
     await saveDiagnosis(result);
     const updatedHistory = await getAllHistory();
     setHistory(updatedHistory);
@@ -129,6 +170,7 @@ function App() {
     setStatus('idle');
     setDiagnosisResult(null);
     setPendingDiagnosis(null);
+    setRecheckTarget(null);
     setTextInput('');
     setLastAudio(null);
     setLastImage(null);
@@ -165,7 +207,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-12 relative">
-      {/* Navbar */}
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
@@ -188,7 +229,6 @@ function App() {
         </div>
       </nav>
 
-      {/* History Sidebar */}
       {showHistory && (
         <div className="fixed inset-0 z-40 flex justify-end">
           <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setShowHistory(false)}></div>
@@ -200,8 +240,11 @@ function App() {
             {history.length === 0 ? <p className="text-slate-400 text-sm text-center">기록이 없습니다.</p> : (
               <div className="space-y-3">
                 {history.map(item => (
-                  <div key={item.id} onClick={() => loadFromHistory(item)} className="p-3 border rounded-lg cursor-pointer hover:bg-indigo-50 transition-all">
-                    <span className="font-semibold text-sm">{item.appliance}</span>
+                  <div key={item.id} onClick={() => loadFromHistory(item)} className={`p-3 border rounded-lg cursor-pointer hover:bg-indigo-50 transition-all ${item.resolutionStatus === 'SOLVED' ? 'border-green-200 bg-green-50' : ''}`}>
+                    <div className="flex justify-between items-start">
+                      <span className="font-semibold text-sm">{item.appliance}</span>
+                      {item.resolutionStatus === 'SOLVED' && <span className="text-[10px] bg-green-500 text-white px-1.5 py-0.5 rounded font-bold">해결됨</span>}
+                    </div>
                     <p className="text-xs text-slate-500 line-clamp-1">{item.issue}</p>
                   </div>
                 ))}
@@ -212,8 +255,15 @@ function App() {
       )}
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-        {(status === 'idle' || status === 'too-short') && (
+        {(status === 'idle' || status === 'too-short' || status === 'rechecking') && (
           <div className="max-w-xl mx-auto bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden animate-fade-in">
+            {status === 'rechecking' && (
+              <div className="bg-amber-600 p-4 text-white text-center font-bold flex items-center justify-center gap-2">
+                <ActivityIcon className="w-5 h-5" />
+                수리 후 상태 재점검 모드
+                <button onClick={() => setStatus('idle')} className="ml-4 text-xs bg-white/20 px-2 py-1 rounded">취소</button>
+              </div>
+            )}
             <div className="flex border-b">
               <button onClick={() => setInputMode(InputMode.AUDIO)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center gap-2 transition-colors ${inputMode === InputMode.AUDIO ? 'bg-slate-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500'}`}>
                 <ActivityIcon className="w-4 h-4" /> 소음
@@ -221,9 +271,11 @@ function App() {
               <button onClick={() => setInputMode(InputMode.IMAGE)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center gap-2 transition-colors ${inputMode === InputMode.IMAGE ? 'bg-slate-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500'}`}>
                 <ImageIcon className="w-4 h-4" /> 사진
               </button>
-              <button onClick={() => setInputMode(InputMode.TEXT)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center gap-2 transition-colors ${inputMode === InputMode.TEXT ? 'bg-slate-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500'}`}>
-                <SearchIcon className="w-4 h-4" /> 증상
-              </button>
+              {status !== 'rechecking' && (
+                <button onClick={() => setInputMode(InputMode.TEXT)} className={`flex-1 py-4 text-sm font-bold flex items-center justify-center gap-2 transition-colors ${inputMode === InputMode.TEXT ? 'bg-slate-50 text-indigo-600 border-b-2 border-indigo-600' : 'text-slate-500'}`}>
+                  <SearchIcon className="w-4 h-4" /> 증상
+                </button>
+              )}
             </div>
             <div className="p-6">
               {status === 'too-short' && <div className="mb-4 p-3 bg-amber-50 text-amber-800 rounded-lg text-sm">3초 이상 녹음해주세요.</div>}
@@ -261,7 +313,7 @@ function App() {
                       <textarea 
                         value={textInput} 
                         onChange={e => setTextInput(e.target.value)} 
-                        placeholder="증상을 자유롭게 설명해주세요 (예: 에어컨에서 틱틱 소리가 나요)" 
+                        placeholder="증상을 자유롭게 설명해주세요..." 
                         className="w-full h-40 p-4 rounded-xl bg-slate-800 text-white outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-500" 
                       />
                       <button 
@@ -284,7 +336,7 @@ function App() {
         {status === 'analyzing' && (
           <div className="flex flex-col items-center justify-center py-20 animate-pulse">
             <div className="w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-            <h2 className="mt-6 text-xl font-bold">AI가 매뉴얼 데이터를 분석 중입니다...</h2>
+            <h2 className="mt-6 text-xl font-bold">AI가 데이터를 분석 중입니다...</h2>
           </div>
         )}
 
@@ -305,7 +357,14 @@ function App() {
         )}
 
         {status === 'complete' && diagnosisResult && (
-          <DiagnosisView result={diagnosisResult} onOpenChat={() => setShowChat(true)} onReset={resetApp} />
+          <DiagnosisView 
+            result={diagnosisResult} 
+            onOpenChat={() => setShowChat(true)} 
+            onReset={resetApp} 
+            onMarkSolved={() => handleResolutionUpdate(diagnosisResult.id, 'SOLVED')}
+            onMarkNotSolved={() => handleResolutionUpdate(diagnosisResult.id, 'NOT_SOLVED')}
+            onRecheckRequest={() => { setRecheckTarget(diagnosisResult); setStatus('rechecking'); }}
+          />
         )}
 
         {status === 'error' && (

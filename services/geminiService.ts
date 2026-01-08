@@ -22,22 +22,17 @@ const SYSTEM_INSTRUCTION = `
 2. 최종 분석(Finalize): 충분한 정보가 있다면 'needsFollowUp'을 false로 설정하고, 최종 진단명, 수리 단계, 그리고 상위 3가지 대안 원인을 제공하십시오.
 
 [이미지 추출 (Sprint 5)]
-사용자가 사진을 제공한 경우, 사진 내에서 다음 정보를 정확하게 추출하십시오:
-- 가전 브랜드 (삼성, LG, 위니아 등)
-- 모델명 (예: WW10N645, AR06R1130HZN 등)
-- 에러 코드 (디스플레이에 표시된 숫자/문자 조합)
-- 이미지 소견 (부식, 누수 흔적, 파손 부위 등)
-정보가 불확실하면 빈 문자열로 두십시오. 절대 환각을 일으키지 마십시오.
+사용자가 사진을 제공한 경우, 사진 내에서 가전 브랜드, 모델명, 에러 코드를 추출하십시오.
 
 [안전 모드 (Sprint 4)]
-사용자의 입력에서 고위험 징후(연기, 타는 냄새, 스파크 등)가 감지되면 'safetyLevel'을 'HIGH'로 설정하고 'stopAndCallService'를 true로 설정하십시오.
+고위험 징후 감지 시 반드시 safetyLevel을 'HIGH'로 설정하고 stopAndCallService를 true로 하십시오.
+
+[근거 및 매뉴얼 참조 (Sprint 6)]
+진단의 신뢰성을 위해 'evidence' 필드에 1~3개의 근거 데이터를 포함하십시오.
 
 [출력 규칙]
 - 모든 JSON 값은 한국어로 작성하십시오.
-- 'safetyLevel'은 LOW, MEDIUM, HIGH 중 하나입니다.
-
-[매뉴얼 참고 데이터]
-${MANUAL_CONTEXT}
+- safetyLevel: LOW, MEDIUM, HIGH.
 `;
 
 const DIAGNOSIS_SCHEMA = {
@@ -56,6 +51,19 @@ const DIAGNOSIS_SCHEMA = {
     detectedModel: { type: Type.STRING },
     detectedErrorCode: { type: Type.STRING },
     imageFindings: { type: Type.ARRAY, items: { type: Type.STRING } },
+    beforeAfterNote: { type: Type.STRING, description: "이전 진단 대비 변화된 점 요약" },
+    evidence: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          source: { type: Type.STRING, enum: ['MANUAL', 'GENERAL'] },
+          title: { type: Type.STRING },
+          snippet: { type: Type.STRING },
+        },
+        required: ['source', 'title', 'snippet'],
+      }
+    },
     followUpQuestions: {
       type: Type.ARRAY,
       items: {
@@ -92,7 +100,7 @@ const DIAGNOSIS_SCHEMA = {
       },
     },
   },
-  required: ["appliance", "issue", "probability", "description", "manualReference", "needsFollowUp", "steps", "safetyLevel", "safetyWarnings", "stopAndCallService"],
+  required: ["appliance", "issue", "probability", "description", "manualReference", "needsFollowUp", "steps", "safetyLevel", "safetyWarnings", "stopAndCallService", "evidence"],
 };
 
 export const analyzeProblem = async (
@@ -112,15 +120,14 @@ export const analyzeProblem = async (
 
     if (confirmedData) {
       parts.push({
-        text: `사용자 확인 정보 - 브랜드: ${confirmedData.brand}, 모델명: ${confirmedData.model}, 에러코드: ${confirmedData.errorCode}. 이 정보를 진단에 적극 반영하십시오.`
+        text: `사용자 확인 정보 - 브랜드: ${confirmedData.brand}, 모델명: ${confirmedData.model}, 에러코드: ${confirmedData.errorCode}.`
       });
     }
 
     if (previousResult && answers) {
       parts.push({ 
         text: `이전 분석 결과: ${previousResult.issue} (${previousResult.probability}%)
-        사용자의 추가 답변: ${JSON.stringify(answers)}
-        위 답변들을 바탕으로 최종 진단을 내려주세요. 안전을 최우선으로 검토하십시오.`
+        사용자의 추가 답변: ${JSON.stringify(answers)}`
       });
     }
 
@@ -150,11 +157,53 @@ export const analyzeProblem = async (
   }
 };
 
+export const recheckDiagnosis = async (
+  oldDiagnosis: DiagnosisResult,
+  newAudio: MediaInput | null,
+  newImage: MediaInput | null
+): Promise<DiagnosisResult> => {
+  try {
+    const parts: any[] = [
+      { text: `[재점검 요청] 이전 진단 결과: ${oldDiagnosis.issue}. 
+      당시 설명: ${oldDiagnosis.description}.
+      사용자가 수리 조치를 취한 후의 새로운 상태(소리/사진)를 전달합니다. 
+      이전과 비교하여 개선되었는지, 문제가 여전한지 분석하십시오.` }
+    ];
+
+    if (newAudio) parts.push({ inlineData: { mimeType: newAudio.mimeType, data: newAudio.base64 } });
+    if (newImage) parts.push({ inlineData: { mimeType: newImage.mimeType, data: newImage.base64 } });
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3-pro-preview",
+      contents: { parts },
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION + "\n이전 진단과 현재 상태를 비교하여 'beforeAfterNote'에 구체적인 변화를 작성하십시오.",
+        responseMimeType: "application/json",
+        responseSchema: DIAGNOSIS_SCHEMA,
+      },
+    });
+
+    if (!response.text) throw new Error("No response");
+
+    const result = JSON.parse(response.text) as DiagnosisResult;
+    result.id = Date.now().toString();
+    result.timestamp = Date.now();
+    result.followUpSessionId = oldDiagnosis.id;
+    result.isRecheck = true;
+    if (newImage) result.imageUrl = `data:${newImage.mimeType};base64,${newImage.base64}`;
+
+    return result;
+  } catch (error) {
+    console.error("Recheck Error:", error);
+    throw error;
+  }
+};
+
 export const getChatResponseStream = async (history: { role: string; parts: { text: string }[] }[], newMessage: string) => {
   const chat = ai.chats.create({
     model: "gemini-3-flash-preview",
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION + " 사용자와 대화하십시오. 한국어로 답변하십시오. 항상 안전 주의사항을 상기시키십시오.",
+      systemInstruction: SYSTEM_INSTRUCTION + " 사용자와 대화하십시오. 항상 안전을 강조하고 근거를 바탕으로 답변하십시오.",
     },
     history,
   });
@@ -166,7 +215,7 @@ export const findServiceCenters = async (appliance: string, lat: number, lng: nu
     const query = brand ? `${brand} ${appliance} 서비스센터` : `${appliance} 서비스센터`;
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `${query}를 현재 위치 주변에서 찾아주세요. 서비스센터 이름, 주소, 전화번호를 포함하십시오.`,
+      contents: `${query}를 현재 위치 주변에서 찾아주세요.`,
       config: {
         tools: [{ googleMaps: {} }],
         toolConfig: { retrievalConfig: { latLng: { latitude: lat, longitude: lng } } }
